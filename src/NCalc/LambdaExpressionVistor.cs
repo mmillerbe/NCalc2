@@ -9,6 +9,21 @@ namespace NCalc
 {
     internal class LambdaExpressionVistor : LogicalExpressionVisitor
     {
+        private static readonly Type[] _precedence = new Type[]
+        {
+            typeof(decimal),
+            typeof(double),
+            typeof(float),
+            typeof(ulong),
+            typeof(long),
+            typeof(uint),
+            typeof(int),
+            typeof(ushort),
+            typeof(short),
+            typeof(byte),
+            typeof(sbyte)
+        };
+
         private readonly IDictionary<string, object> _parameters;
         private L.Expression _result;
         private readonly L.Expression _context;
@@ -169,7 +184,8 @@ namespace NCalc
             }
 
             string functionName = function.Identifier.Name.ToLowerInvariant();
-            if (functionName == "if") {
+            if (functionName == "if") 
+            {
                 var numberTypePriority = new Type[] { typeof(double), typeof(float), typeof(long), typeof(int), typeof(short) };
                 var index1 = Array.IndexOf(numberTypePriority, args[1].Type);
                 var index2 = Array.IndexOf(numberTypePriority, args[2].Type);
@@ -179,12 +195,31 @@ namespace NCalc
                 }
                 _result = L.Expression.Condition(args[0], args[1], args[2]);
                 return;
-            } else if (functionName == "in") {
-                var items = L.Expression.NewArrayInit(args[0].Type,
+            } else if (functionName == "in")
+            {
+                Type effectiveType = args[0].Type.IsEnum ? args[0].Type.GetEnumUnderlyingType() : args[0].Type;
+                var items = L.Expression.NewArrayInit(effectiveType,
                         new ArraySegment<L.Expression>(args, 1, args.Length - 1));
                 var smi = typeof(Array).GetRuntimeMethod("IndexOf", new[] { typeof(Array), typeof(object) });
-                var r = L.Expression.Call(smi, L.Expression.Convert(items, typeof(Array)), L.Expression.Convert(args[0], typeof(object)));
+                var r = L.Expression.Call(smi, L.Expression.Convert(items, typeof(Array)), L.Expression.Convert(L.Expression.Convert(args[0], effectiveType), typeof(object)));
                 _result = L.Expression.GreaterThanOrEqual(r, L.Expression.Constant(0));
+                return;
+            }
+            else if (functionName == "contains")
+            {
+                var containsArg0 = L.Expression.Call(args[0], "ToString", Type.EmptyTypes);
+                var containsArg1 = L.Expression.Call(args[1], "ToString", Type.EmptyTypes);
+                var smi = typeof(string).GetRuntimeMethod("IndexOf", new[] { typeof(string) });
+                var r = L.Expression.Call(containsArg0, smi, containsArg1);
+                _result = L.Expression.GreaterThanOrEqual(r, L.Expression.Constant(0));
+                return;
+            }
+            else if (functionName == "startswith")
+            {
+                var containsArg0 = L.Expression.Call(args[0], "ToString", Type.EmptyTypes);
+                var containsArg1 = L.Expression.Call(args[1], "ToString", Type.EmptyTypes);
+                var smi = typeof(string).GetRuntimeMethod("StartsWith", new[] { typeof(string) });
+                _result = L.Expression.Call(containsArg0, smi, containsArg1);
                 return;
             }
 
@@ -350,26 +385,11 @@ namespace NCalc
                 }
             }
 
-            var precedence = new[]
-            {
-                typeof(decimal),
-                typeof(double),
-                typeof(float),
-                typeof(ulong),
-                typeof(long),
-                typeof(uint),
-                typeof(int),
-                typeof(ushort),
-                typeof(short),
-                typeof(byte),
-                typeof(sbyte)
-            };
-
-            int l = Array.IndexOf(precedence, left.Type);
-            int r = Array.IndexOf(precedence, right.Type);
+            int l = Array.IndexOf(_precedence, left.Type.IsEnum ? left.Type.GetEnumUnderlyingType() : left.Type);
+            int r = Array.IndexOf(_precedence, right.Type.IsEnum ? right.Type.GetEnumUnderlyingType() : right.Type);
             if (l >= 0 && r >= 0)
             {
-                var type = precedence[Math.Min(l, r)];
+                var type = _precedence[Math.Min(l, r)];
                 if (left.Type != type)
                 {
                     left = L.Expression.Convert(left, type);
@@ -388,8 +408,16 @@ namespace NCalc
             }
             else comparer = L.Expression.Property(null, typeof(StringComparer), "Ordinal");
 
-            if (comparer != null && (typeof(string).Equals(left.Type) || typeof(string).Equals(right.Type)))
+            bool leftIsString = typeof(string).Equals(left.Type);
+            bool rightIsString = typeof(string).Equals(right.Type);
+
+            if (comparer != null && (leftIsString || rightIsString))
             {
+                if (!leftIsString)
+                    left = L.Expression.Call(left, "ToString", Type.EmptyTypes);
+                else if (!rightIsString)
+                    right = L.Expression.Call(right, "ToString", Type.EmptyTypes);
+
                 switch (expressiontype)
                 {
                     case BinaryExpressionType.Equal: return L.Expression.Call(comparer, typeof(StringComparer).GetRuntimeMethod("Equals", new[] { typeof(string), typeof(string) }), new L.Expression[] { left, right });
